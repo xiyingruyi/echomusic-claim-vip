@@ -13,6 +13,11 @@ const DEFAULT_SETTINGS = { autoClaim: false };
 
 const PLUGIN_TAG = "[claim-vip]";
 
+// 业务错误码：131001 = 今日畅听会员已领过，297002 = 今日概念会员已升级。
+// 两者都代表「今天的目标已达成」，不是失败。
+const ALREADY_CLAIMED = 131001;
+const ALREADY_UPGRADED = 297002;
+
 // ---------- 模块级状态 ----------
 let state = null; // { settings } 响应式
 let claimState = null; // { busy, lastMessage, lastOk, musicDone, conceptDone }
@@ -137,6 +142,17 @@ const refreshStatus = async (ctx) => {
   if (target.conceptDone) optimistic.concept = true;
 };
 
+// 领取/升级会改变会员到期时间，宿主 user store 里仍是旧数据。
+// 通过 pinia 取到宿主的 user store 刷新一次，让个人中心、播放页立刻同步。
+const refreshHostUser = async (ctx) => {
+  try {
+    const userStore = ctx.pinia?._s?.get?.("user");
+    await userStore?.fetchUserInfo?.();
+  } catch (error) {
+    /* 刷新失败不影响领取结果 */
+  }
+};
+
 // 登录后自动领取（与原生 autoReceiveVipIfNeeded 一致：逐个尝试、忽略单步失败）
 // 返回实际结果，避免在「今日已领过」时误报成功。
 const autoReceive = async (ctx) => {
@@ -162,7 +178,7 @@ const autoReceive = async (ctx) => {
     optimistic.concept = true;
   } catch (error) {
     const { code } = extractError(error);
-    if (code === 297002) {
+    if (code === ALREADY_UPGRADED) {
       optimistic.concept = true;
       console.warn(PLUGIN_TAG, "自动升级概念会员：今日已升级");
     } else {
@@ -177,6 +193,8 @@ const autoReceive = async (ctx) => {
     ctx.toast.success(`已自动领取${parts.join("、")}`);
   }
   // 全部未执行（例如今日已领过）时不打扰用户，状态以服务器记录为准。
+  // 刷新放到提示之后，网络慢也不会拖住提示。
+  void refreshHostUser(ctx);
 };
 
 // ---------- UI ----------
@@ -395,14 +413,23 @@ const buildPanel = (ctx) => {
     } catch (error) {
       if (claimState !== target) return;
       const { code, msg } = extractError(error);
-      const text = msg || (code ? `领取失败（错误码 ${code}）` : "领取失败，可能今日已领取");
-      setMessage(text, false);
-      ctx.toast.warning(text);
+      // 131001 = 今天已领过。接口报错，但目标已达成，按成功处理（原生自动领取同样忽略该错误）。
+      if (code === ALREADY_CLAIMED) {
+        optimistic.music = true;
+        target.musicDone = true;
+        setMessage("今日畅听会员已领取", true);
+        ctx.toast.info("今日畅听会员已领取");
+      } else {
+        const text = msg || (code ? `领取失败（错误码 ${code}）` : "领取失败，请稍后重试");
+        setMessage(text, false);
+        ctx.toast.warning(text);
+      }
     } finally {
       if (claimState === target) target.busy = null;
     }
     // 以服务器月领取记录为准同步真实状态（服务器有同步延迟，故乐观标记优先）
     void refreshStatus(ctx);
+    void refreshHostUser(ctx);
   };
 
   const doClaimConcept = async () => {
@@ -420,7 +447,7 @@ const buildPanel = (ctx) => {
       if (claimState !== target) return;
       const { code, msg } = extractError(error);
       // 297002 = 已升级过（原生 Upgrade 逻辑同样把该码视为成功终态）
-      if (code === 297002) {
+      if (code === ALREADY_UPGRADED) {
         optimistic.concept = true;
         target.conceptDone = true;
         setMessage("概念会员已升级", true);
@@ -434,6 +461,7 @@ const buildPanel = (ctx) => {
       if (claimState === target) target.busy = null;
     }
     void refreshStatus(ctx);
+    void refreshHostUser(ctx);
   };
 
   return defineComponent({
