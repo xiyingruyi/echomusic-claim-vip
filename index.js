@@ -28,11 +28,17 @@ let dialogOpen = null; // 面板弹层开关
 const optimistic = { day: "", music: false, concept: false };
 
 // 把乐观标记对齐到指定日期（跨天后自动作废）
+// 同时清掉面板上的「已领取/已升级」：跨天后这些状态必须由服务器重新判定，
+// 否则昨天的「已升级」会一直挂着，按钮也一直是灰的。
 const syncOptimisticDay = (today) => {
   if (optimistic.day !== today) {
     optimistic.day = today;
     optimistic.music = false;
     optimistic.concept = false;
+    if (claimState) {
+      claimState.musicDone = false;
+      claimState.conceptDone = false;
+    }
   }
 };
 
@@ -97,6 +103,9 @@ const claimConceptVip = async (ctx) => {
   return ctx.kugou.user.upgradeDayVip();
 };
 
+// 是否已登录：宿主的 token 存在即视为登录（与原生 isLoggedIn 一致）
+const isLoggedIn = (ctx) => Boolean(ctx?.pinia?.state?.value?.user?.info?.token);
+
 // 从月领取记录判断今日是否已领畅听；从 VIP 详情判断概念会员是否已开。
 // 服务器有一定同步延迟，因此只允许「未领取 -> 已领取」的单向翻转：
 // 已判定为已领时，后续刷新不会把它翻回未领，避免刚领完就显示未领。
@@ -110,29 +119,50 @@ const refreshStatus = async (ctx) => {
   try {
     today = await getToday(ctx);
     syncOptimisticDay(today);
-    const record = await ctx.kugou.user.getVipMonthRecord();
-    const data = isObject(record?.data) ? record.data : isObject(record) ? record : {};
-    const list = Array.isArray(data.list) ? data.list : Array.isArray(record?.list) ? record.list : [];
-    const claimed = list.some((item) => String(item?.day) === today);
-    if (!alive()) return;
-    target.musicDone = claimed || optimistic.music;
+  } catch (error) {
+    /* getToday 内部已兜底，不会抛 */
+  }
+  // 未登录时接口必然失败，不必发请求，也不刷屏报错
+  const loggedIn = isLoggedIn(ctx);
+
+  try {
+    if (loggedIn) {
+      const record = await ctx.kugou.user.getVipMonthRecord();
+      const data = isObject(record?.data) ? record.data : isObject(record) ? record : {};
+      const list = Array.isArray(data.list) ? data.list : Array.isArray(record?.list) ? record.list : [];
+      const claimed = list.some((item) => String(item?.day) === today);
+      if (!alive()) return;
+      target.musicDone = claimed || optimistic.music;
+    } else {
+      target.musicDone = optimistic.music;
+    }
   } catch (error) {
     console.warn(PLUGIN_TAG, "获取领取记录失败", error);
   }
 
   try {
-    const detail = await ctx.kugou.user.getUserVipDetail();
-    const data = isObject(detail?.data) ? detail.data : isObject(detail) ? detail : {};
-    const busiVip = Array.isArray(data.busi_vip)
-      ? data.busi_vip
-      : Array.isArray(detail?.data?.busi_vip)
-        ? detail.data.busi_vip
-        : [];
-    const upgraded = busiVip.some(
-      (item) => item?.product_type === "svip" && Number(item?.is_vip) === 1,
-    );
-    if (!alive()) return;
-    target.conceptDone = upgraded || optimistic.concept;
+    if (loggedIn) {
+      const detail = await ctx.kugou.user.getUserVipDetail();
+      const data = isObject(detail?.data) ? detail.data : isObject(detail) ? detail : {};
+      const busiVip = Array.isArray(data.busi_vip)
+        ? data.busi_vip
+        : Array.isArray(detail?.data?.busi_vip)
+          ? detail.data.busi_vip
+          : [];
+      if (!alive()) return;
+      // 概念会员是「当天有效的 svip」，且历史记录会一直留着 is_vip=1。
+      // 只看 is_vip 会把昨天升过的显示成今天已升级（刚过 0 点时最容易遇到），
+      // 因此以到期日期判断：今天升级过的话，到期日一定晚于今天。
+      const upgradedToday = busiVip.some(
+        (item) =>
+          item?.product_type === "svip" &&
+          Number(item?.is_vip) === 1 &&
+          String(item?.vip_end_time ?? "").slice(0, 10) > today,
+      );
+      target.conceptDone = upgradedToday || optimistic.concept;
+    } else {
+      target.conceptDone = optimistic.concept;
+    }
   } catch (error) {
     console.warn(PLUGIN_TAG, "获取 VIP 详情失败", error);
   }
@@ -168,8 +198,14 @@ const autoReceive = async (ctx) => {
   } catch (error) {
     const { code } = extractError(error);
     // 今日已领过时接口同样会报错，此时按「已完成」处理更符合用户预期。
-    if (code === 0) console.warn(PLUGIN_TAG, "自动领取畅听会员失败", error);
-    else console.warn(PLUGIN_TAG, `自动领取畅听会员未执行（错误码 ${code}）`);
+    if (code === ALREADY_CLAIMED) {
+      optimistic.music = true;
+      console.warn(PLUGIN_TAG, "自动领取畅听会员：今日已领取");
+    } else if (code === 0) {
+      console.warn(PLUGIN_TAG, "自动领取畅听会员失败", error);
+    } else {
+      console.warn(PLUGIN_TAG, `自动领取畅听会员未执行（错误码 ${code}）`);
+    }
   }
 
   try {
