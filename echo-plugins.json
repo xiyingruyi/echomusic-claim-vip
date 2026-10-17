@@ -1,0 +1,14 @@
+{
+  "name": "EchoMusic 插件源（xiyingruyi）",
+  "homepage": "https://github.com/xiyingruyi/echomusic-claim-vip",
+  "plugins": [
+    {
+      "id": "claim-vip",
+      "tags": ["会员", "领取", "工具"],
+      "repo": "xiyingruyi/echomusic-claim-vip",
+      "homepage": "https://github.com/xiyingruyi/echomusic-claim-vip",
+      "path": "",
+      "downloadUrl": "https://github.com/xiyingruyi/echomusic-claim-vip/archive/refs/heads/main.zip"
+    }
+  ]
+}

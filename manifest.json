@@ -1,0 +1,19 @@
+{
+  "id": "claim-vip",
+  "name": "领取会员",
+  "version": "1.0.0",
+  "description": "恢复「领取畅听会员 / 升级概念会员」：一键领取每日畅听 VIP 并升级概念会员，支持登录后自动领取。",
+  "author": "wangxin",
+  "icon": "icon.svg",
+  "main": "index.js",
+  "runtime": {
+    "miniPlayer": false,
+    "desktopLyric": false
+  },
+  "capabilities": {
+    "kugouApi": true
+  },
+  "requires": {
+    "echoMusicVersion": ">=2.2.6-beta.9"
+  }
+}
